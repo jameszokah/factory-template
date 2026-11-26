@@ -1,0 +1,6 @@
+This project is derived from Mastra Factory (https://github.com/mastra-ai/mastra),
+Copyright (c) 2025 Kepler Software, Inc., licensed under the Apache License 2.0.
+
+apps/ui is a modified copy of mastracode/factory-ui from the Mastra repository
+at the commit recorded in UPSTREAM.json. The server depends on the published
+@mastra/* npm packages, which remain under their own licenses.

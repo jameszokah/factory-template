@@ -1,0 +1,30 @@
+{
+  "name": "@factory/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Factory server: a self-hosted Mastra Factory backend (API, agents, storage, auth, integrations).",
+  "main": "src/mastra/index.ts",
+  "scripts": {
+    "dev": "mastra factory dev",
+    "build": "mastra build",
+    "start": "mastra start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mastra/auth-better-auth": "1.1.13",
+    "@mastra/auth-workos": "1.7.0",
+    "@mastra/core": "1.86.0",
+    "@mastra/factory": "0.31.0",
+    "@mastra/pg": "1.38.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "mastra": "1.40.2",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

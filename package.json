@@ -1,0 +1,23 @@
+{
+  "name": "factory-template",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A self-hosted, fully customizable Mastra Factory: your own backend and your own UI.",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "db:up": "docker compose up -d --wait db",
+    "db:down": "docker compose down",
+    "dev": "node scripts/dev.mjs",
+    "dev:ui": "node scripts/dev.mjs --hmr",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "typecheck": "bun run --filter '*' typecheck",
+    "rename": "node scripts/rename.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "trustedDependencies": ["esbuild", "protobufjs", "@google/genai", "bufferutil", "utf-8-validate", "msw"]
+}

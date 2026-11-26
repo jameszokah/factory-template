@@ -1,0 +1,243 @@
+import { unstartedCards } from '@mastra/factory/routes/work-item-selection';
+
+import { storedCard } from '../../../../../../e2e/ui/board-reads';
+import { listedRepository } from '../../../../../../e2e/ui/factory-projects';
+import type { WorkItem } from '../../../factory/services/workItems';
+import type { FactoryProjectPayload } from '../../../workspaces/services/github';
+import type { FactoryUserSession } from '../../../workspaces/services/user-sessions';
+
+export const ACTIVE_FACTORY_ID = 'factory-active';
+export const OTHER_FACTORY_ID = 'factory-other';
+export const FIRST_REPOSITORY_ID = 'repository-one';
+export const SECOND_REPOSITORY_ID = 'repository-two';
+export const OTHER_REPOSITORY_ID = 'repository-other';
+
+export const factoryProjects: FactoryProjectPayload[] = [
+  { id: ACTIVE_FACTORY_ID, name: 'Mastra Factory' },
+  { id: OTHER_FACTORY_ID, name: 'Docs Factory' },
+];
+
+export const factoryRepositories = {
+  [ACTIVE_FACTORY_ID]: [
+    listedRepository(FIRST_REPOSITORY_ID, 'mastra-ai/mastra', { branch: 'main' }),
+    listedRepository(SECOND_REPOSITORY_ID, 'mastra-ai/docs', {
+      branch: 'main',
+    }),
+  ],
+  [OTHER_FACTORY_ID]: [
+    listedRepository(OTHER_REPOSITORY_ID, 'other-org/other-repo', {
+      branch: 'main',
+    }),
+  ],
+};
+
+function createSession(
+  sessionId: string,
+  projectRepositoryId: string,
+  branch: string,
+  updatedAt: string,
+): FactoryUserSession {
+  return {
+    id: `row-${sessionId}`,
+    sessionId,
+    projectRepositoryId,
+    orgId: 'org-search',
+    userId: 'user-search',
+    visibility: 'org',
+    branch,
+    baseBranch: 'main',
+    sandboxId: `sandbox-${sessionId}`,
+    sandboxWorkdir: `/workspaces/${sessionId}`,
+    materializedAt: updatedAt,
+    createdAt: updatedAt,
+    updatedAt,
+  };
+}
+
+export const sessionsByRepository: Record<string, FactoryUserSession[]> = {
+  [FIRST_REPOSITORY_ID]: [
+    createSession('session-work', FIRST_REPOSITORY_ID, 'factory/command-search', '2026-07-29T12:00:00.000Z'),
+  ],
+  [SECOND_REPOSITORY_ID]: [
+    createSession('session-review', SECOND_REPOSITORY_ID, 'factory/pr-900', '2026-07-29T14:00:00.000Z'),
+    createSession('session-user', SECOND_REPOSITORY_ID, 'user/research-notes', '2026-07-29T13:00:00.000Z'),
+    createSession('session-unlinked', SECOND_REPOSITORY_ID, 'feature/offline-index', '2026-07-29T11:00:00.000Z'),
+  ],
+  [OTHER_REPOSITORY_ID]: [
+    createSession('session-other-factory', OTHER_REPOSITORY_ID, 'factory/other', '2026-07-29T15:00:00.000Z'),
+  ],
+};
+
+export const workItems: WorkItem[] = [
+  {
+    id: 'work-item-search',
+    orgId: 'org-search',
+    createdBy: 'user-search',
+    githubProjectId: ACTIVE_FACTORY_ID,
+    source: 'github-issue',
+    sourceKey: 'mastra-ai/mastra:321',
+    parentWorkItemId: null,
+    title: 'Add universal command search',
+    url: 'https://github.com/mastra-ai/mastra/issues/321',
+    stages: ['execute'],
+    stageHistory: [],
+    sessions: {
+      build: {
+        sessionId: 'session-work',
+        branch: 'factory/command-search',
+        threadId: 'thread-work-linked',
+        startedBy: 'user-search',
+      },
+    },
+    metadata: { number: 321 },
+    triageType: null,
+    acceptedAt: null,
+    description: null,
+    revision: 2,
+    createdAt: '2026-07-29T10:00:00.000Z',
+    updatedAt: '2026-07-29T12:30:00.000Z',
+  },
+  {
+    id: 'work-item-review',
+    orgId: 'org-search',
+    createdBy: 'user-search',
+    githubProjectId: ACTIVE_FACTORY_ID,
+    source: 'github-pr',
+    sourceKey: 'mastra-ai/mastra:900',
+    parentWorkItemId: null,
+    title: 'Review command palette PR',
+    url: 'https://github.com/mastra-ai/mastra/pull/900',
+    stages: ['review'],
+    stageHistory: [],
+    sessions: {
+      review: {
+        sessionId: 'session-review',
+        branch: 'factory/pr-900',
+        threadId: 'thread-review-linked',
+        startedBy: 'user-search',
+      },
+    },
+    metadata: { number: 900 },
+    triageType: null,
+    acceptedAt: null,
+    description: null,
+    revision: 1,
+    createdAt: '2026-07-29T13:30:00.000Z',
+    updatedAt: '2026-07-29T14:30:00.000Z',
+  },
+  {
+    id: 'work-item-unstarted-review',
+    orgId: 'org-search',
+    createdBy: 'user-search',
+    githubProjectId: ACTIVE_FACTORY_ID,
+    source: 'github-pr',
+    sourceKey: 'mastra-ai/mastra:4242',
+    parentWorkItemId: null,
+    title: 'Bump the command palette dependencies',
+    url: 'https://github.com/mastra-ai/mastra/pull/4242',
+    stages: ['intake'],
+    stageHistory: [],
+    sessions: {},
+    metadata: { number: 4242 },
+    workItem: {
+      provider: 'github',
+      key: null,
+      url: 'https://github.com/mastra-ai/mastra/pull/4242',
+      title: 'Bump the command palette dependencies',
+      state: 'open',
+      labels: [],
+      author: null,
+      metadata: { number: 4242 },
+    },
+    triageType: null,
+    acceptedAt: null,
+    description: null,
+    revision: 1,
+    createdAt: '2026-07-29T09:00:00.000Z',
+    updatedAt: '2026-07-29T09:30:00.000Z',
+  },
+  {
+    id: 'work-item-unstarted-issue',
+    orgId: 'org-search',
+    createdBy: 'user-search',
+    githubProjectId: ACTIVE_FACTORY_ID,
+    source: 'github-issue',
+    sourceKey: 'mastra-ai/mastra:777',
+    parentWorkItemId: null,
+    title: 'Palette keyboard traps focus on mobile',
+    url: 'https://github.com/mastra-ai/mastra/issues/777',
+    stages: ['triage'],
+    stageHistory: [],
+    sessions: {},
+    metadata: { number: 777 },
+    triageType: null,
+    acceptedAt: null,
+    description: null,
+    revision: 1,
+    createdAt: '2026-07-29T08:00:00.000Z',
+    updatedAt: '2026-07-29T08:30:00.000Z',
+  },
+];
+
+function toExternalSource(source: WorkItem['source'], sourceKey: string | null, url: string | null) {
+  if (source === 'manual' || !sourceKey) return null;
+
+  let integrationId = 'github';
+  if (source === 'linear-issue') integrationId = 'linear';
+  if (source === 'gitlab-issue' || source === 'gitlab-pr') integrationId = 'gitlab';
+
+  let type = 'issue';
+  if (source === 'github-pr' || source === 'gitlab-pr') type = 'pull-request';
+
+  return {
+    integrationId,
+    type,
+    externalId: sourceKey,
+    ...(url ? { url } : {}),
+  };
+}
+
+export function toWireWorkItem(item: WorkItem) {
+  const { githubProjectId, source, sourceKey, url, ...rest } = item;
+
+  return {
+    ...rest,
+    factoryProjectId: githubProjectId,
+    externalSource: toExternalSource(source, sourceKey, url),
+  };
+}
+
+/**
+ * The list route's answer for a query, by the server's rules: the whole board, or the part the
+ * query narrows it to. `null` is a query the server refuses.
+ */
+export function listWorkItemsResponse(cards: WorkItem[], query: URLSearchParams) {
+  const sessionIds = query.getAll('sessionId');
+  const sources = query.getAll('source');
+  const ids = query.getAll('workItemId');
+  const scope = query.get('scope');
+  const holdsSession = (card: WorkItem) => Object.keys(card.sessions).length > 0;
+  let listed = cards;
+  let total: number | undefined;
+  if (scope !== null && scope !== 'sessions') return null;
+  if (query.get('started') === 'false') {
+    // The server's own search, over the cards as the server stores them.
+    const byId = new Map(cards.map(card => [card.id, card]));
+    const found = unstartedCards(
+      cards.map(card => storedCard(toWireWorkItem(card))),
+      query.get('q') ?? '',
+      Number(query.get('limit') ?? 20),
+    );
+    listed = found.cards.map(card => byId.get(card.id)!);
+    total = found.total;
+  } else if (scope === 'sessions') {
+    listed = cards.filter(holdsSession);
+  } else if (sessionIds.length > 0) {
+    listed = cards.filter(card => Object.values(card.sessions).some(ref => sessionIds.includes(ref.sessionId)));
+  } else if (sources.length > 0) {
+    listed = cards.filter(card => [card.sourceKey, card.url].some(key => key !== null && sources.includes(key)));
+  } else if (ids.length > 0) {
+    listed = cards.filter(card => ids.includes(card.id));
+  }
+  return { workItems: listed.map(toWireWorkItem), ...(total === undefined ? {} : { total }) };
+}

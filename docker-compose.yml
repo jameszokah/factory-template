@@ -1,0 +1,40 @@
+# Local and single-host deployment.
+#
+#   bun run db:up                     PostgreSQL only (for `bun run dev`)
+#   docker compose --profile app up   PostgreSQL + the Factory container on :4111
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    ports:
+      - '127.0.0.1:54330:5432'
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+      POSTGRES_DB: factory
+    volumes:
+      # postgres:18+ images require the mount at /var/lib/postgresql.
+      - factory-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U factory -d factory']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    profiles: ['app']
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://factory:factory@db:5432/factory
+      MASTRACODE_PUBLIC_URL: ${MASTRACODE_PUBLIC_URL:-http://localhost:4111}
+    ports:
+      - '4111:4111'
+    volumes:
+      - factory-sandboxes:/data/sandboxes
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  factory-pgdata:
+  factory-sandboxes:

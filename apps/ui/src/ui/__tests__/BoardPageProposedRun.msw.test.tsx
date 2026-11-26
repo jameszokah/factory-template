@@ -1,0 +1,413 @@
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { delay, http, HttpResponse } from 'msw';
+import { createMemoryRouter, RouterProvider } from 'react-router';
+import { describe, expect, it } from 'vitest';
+
+import { listedRepository } from '../../../e2e/ui/factory-projects';
+import { server } from '../../../e2e/ui/msw-server';
+import { renderWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../e2e/ui/render';
+import { createAppRoutes } from '../router';
+
+const FACTORY_ID = 'fp-1';
+const REPO_ID = 'repo-1';
+const ITEM_ID = 'item-1';
+const DECISION_ID = 'decision-1';
+
+const workItem = {
+  id: ITEM_ID,
+  orgId: 'org-1',
+  createdBy: 'user-1',
+  factoryProjectId: FACTORY_ID,
+  externalSource: {
+    integrationId: 'github',
+    type: 'issue',
+    externalId: 'github-issue:1',
+    url: 'https://github.com/acme/app/issues/1',
+  },
+  parentWorkItemId: null,
+  title: 'Fix login bug',
+  stages: ['triage'],
+  stageHistory: [],
+  sessions: {},
+  metadata: { number: 1 },
+  revision: 1,
+  createdAt: '2026-08-10T00:00:00.000Z',
+  updatedAt: '2026-08-10T00:00:00.000Z',
+};
+
+function decision(status: 'proposed' | 'pending' | 'dismissed') {
+  return {
+    id: DECISION_ID,
+    evaluationId: 'evaluation-1',
+    workItemId: ITEM_ID,
+    type: 'invokeSkill',
+    role: 'plan',
+    status,
+    attempts: 0,
+    lastError: null,
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
+    completedAt: null,
+  };
+}
+
+const SESSION_ID = 'sess-1';
+
+const liveSessionWorkItem = {
+  ...workItem,
+  stages: ['planning'],
+  sessions: {
+    triage: { sessionId: SESSION_ID, branch: 'factory/issue-1', threadId: 'thread-1', startedBy: 'user-1' },
+  },
+};
+
+const userSession = {
+  id: 'us-1',
+  sessionId: SESSION_ID,
+  projectRepositoryId: REPO_ID,
+  orgId: 'org-1',
+  userId: 'user-1',
+  title: 'Fix login bug',
+  branch: 'factory/issue-1',
+  baseBranch: 'main',
+  sandboxId: null,
+  sandboxWorkdir: null,
+  materializedAt: '2026-08-10T00:00:00.000Z',
+  createdAt: '2026-08-10T00:00:00.000Z',
+  updatedAt: '2026-08-10T00:00:00.000Z',
+};
+
+const buildingWorkItem = {
+  ...workItem,
+  stages: ['execute'],
+  sessions: {
+    triage: { sessionId: SESSION_ID, branch: 'factory/issue-1', threadId: 'thread-1', startedBy: 'user-1' },
+    work: { sessionId: SESSION_ID, branch: 'factory/issue-1', threadId: 'thread-1', startedBy: 'user-1' },
+  },
+};
+
+const heldWorkItem = {
+  ...workItem,
+  stages: ['intake'],
+  stageHistory: [
+    { stage: 'intake', enteredAt: '2026-08-10T00:00:00.000Z', by: 'user-1' },
+    { stage: 'triage', enteredAt: '2026-08-10T00:01:00.000Z', by: 'user-1' },
+    { stage: 'intake', enteredAt: '2026-08-10T00:02:00.000Z', by: 'agent:binding-1' },
+  ],
+  sessions: {
+    triage: { sessionId: SESSION_ID, branch: 'factory/issue-1', threadId: 'thread-1', startedBy: 'user-1' },
+  },
+};
+
+const closedPullRequestWorkItem = {
+  ...workItem,
+  externalSource: { ...workItem.externalSource, type: 'pull-request', externalId: 'github-pr:1' },
+  stages: ['review'],
+  metadata: { number: 1, state: 'closed' },
+};
+
+function stubBoardEndpoints({
+  withLiveSession = false,
+  building = false,
+  closedPullRequest = false,
+  held = false,
+}: { withLiveSession?: boolean; building?: boolean; closedPullRequest?: boolean; held?: boolean } = {}) {
+  const settled: string[] = [];
+  const transitions: unknown[] = [];
+  let status: 'proposed' | 'pending' | 'dismissed' = 'proposed';
+  const item = held
+    ? heldWorkItem
+    : closedPullRequest
+      ? closedPullRequestWorkItem
+      : building
+        ? buildingWorkItem
+        : withLiveSession
+          ? liveSessionWorkItem
+          : workItem;
+  const sessions = withLiveSession || building || held ? [userSession] : [];
+
+  server.use(
+    http.get(`${TEST_BASE_URL}/auth/me`, () =>
+      HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/factory/projects`, () =>
+      HttpResponse.json({
+        projects: [
+          {
+            id: FACTORY_ID,
+            name: 'Acme Factory',
+            repositories: [listedRepository(REPO_ID, 'acme/app', { branch: 'main' })],
+          },
+        ],
+      }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/work-items`, () =>
+      HttpResponse.json({ workItems: [item] }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/decisions`, () =>
+      HttpResponse.json({ decisions: building || closedPullRequest ? [] : [decision(status)] }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/metrics`, () =>
+      HttpResponse.json({ error: 'Metrics unavailable in this scenario' }, { status: 500 }),
+    ),
+    http.post(`${TEST_BASE_URL}/web/source-control/projects/${REPO_ID}/sessions`, () =>
+      HttpResponse.json({ session: userSession }),
+    ),
+    http.post(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/decisions/${DECISION_ID}/approve`, () => {
+      settled.push('approve');
+      status = 'pending';
+      return HttpResponse.json({ decision: decision('pending') });
+    }),
+    http.post(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/decisions/${DECISION_ID}/dismiss`, () => {
+      settled.push('dismiss');
+      status = 'dismissed';
+      return HttpResponse.json({ decision: decision('dismissed') });
+    }),
+    http.post(
+      `${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/work-items/${ITEM_ID}/transition`,
+      async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        transitions.push(body);
+        return HttpResponse.json({
+          result: {
+            status: 'accepted',
+            transitionId: 'transition-1',
+            itemId: ITEM_ID,
+            revision: 2,
+            stage: body.stage,
+            decisions: [],
+          },
+        });
+      },
+    ),
+    http.get(`${TEST_BASE_URL}/web/intake/config`, () =>
+      HttpResponse.json({
+        config: {
+          github: { enabled: true, sourceIds: ['acme/app'] },
+          linear: { enabled: false, sourceIds: null },
+        },
+      }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
+    http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
+      HttpResponse.json({ enabled: false, connected: false, workspace: null }),
+    ),
+    http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/sessions`, () => HttpResponse.json({ sessions })),
+    http.get(`${TEST_BASE_URL}/api/agent-controller/code/sessions/:resourceId/permissions`, () =>
+      HttpResponse.json({ categories: {}, tools: {} }),
+    ),
+  );
+
+  return { settled, transitions };
+}
+
+function renderBoard(board: 'work' | 'review' = 'work', initialEntry = `/factories/${FACTORY_ID}/${board}`) {
+  const router = createMemoryRouter(createAppRoutes(), { initialEntries: [initialEntry] });
+  return renderWithProviders(<RouterProvider router={router} />);
+}
+
+function renderWorkBoard() {
+  return renderBoard('work');
+}
+
+describe('Board card with a proposed run', () => {
+  it('highlights and focuses a work item opened from attention', async () => {
+    stubBoardEndpoints();
+    const { client } = renderBoard('work', `/factories/${FACTORY_ID}/work?item=${ITEM_ID}`);
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await waitForMutationsIdle(client);
+    expect(card).toHaveAttribute('data-highlighted', 'true');
+    await waitFor(() => expect(within(card).getByRole('link', { name: /Fix login bug$/ })).toHaveFocus());
+  });
+
+  it('highlights a targeted Linear intake card in the unified feed', async () => {
+    stubBoardEndpoints();
+    server.use(
+      http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/work-items`, () =>
+        HttpResponse.json({
+          workItems: [
+            {
+              ...workItem,
+              stages: ['intake'],
+              externalSource: {
+                integrationId: 'linear',
+                type: 'issue',
+                externalId: 'linear-issue:ENG-1',
+                url: 'https://linear.app/acme/issue/ENG-1',
+              },
+              metadata: { identifier: 'ENG-1' },
+            },
+          ],
+        }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/intake/config`, () =>
+        HttpResponse.json({
+          config: {
+            github: { enabled: true, sourceIds: ['acme/app'] },
+            linear: { enabled: true, sourceIds: ['linear-project'] },
+          },
+        }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/intake/bindings`, () =>
+        HttpResponse.json({
+          bindings: [
+            { integrationId: 'linear', sourceId: 'linear-project', factoryProjectId: FACTORY_ID, board: 'work' },
+          ],
+        }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
+        HttpResponse.json({ enabled: true, connected: true, workspace: { id: 'workspace-1' } }),
+      ),
+    );
+    const { client } = renderBoard('work', `/factories/${FACTORY_ID}/work?item=${ITEM_ID}`);
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await waitForMutationsIdle(client);
+    expect(card).toHaveAttribute('data-highlighted', 'true');
+    await waitFor(() => expect(within(card).getByRole('link', { name: /Fix login bug$/ })).toHaveFocus());
+  });
+
+  it("releases the proposal from the card's suggested run instead of starting a second run", async () => {
+    const { settled, transitions } = stubBoardEndpoints();
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await user.click(await within(card).findByRole('button', { name: 'Start suggested run: Investigate' }));
+
+    await waitFor(() => expect(settled).toEqual(['approve']));
+    expect(transitions).toEqual([]);
+  });
+
+  it('turns the proposal down from the card menu', async () => {
+    const { settled, transitions } = stubBoardEndpoints();
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Dismiss suggested run' }));
+
+    await waitFor(() => expect(settled).toEqual(['dismiss']));
+    expect(transitions).toEqual([]);
+  });
+
+  it('releases the proposal from the menu when the card already links to a session', async () => {
+    const { settled, transitions } = stubBoardEndpoints({ withLiveSession: true });
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Start suggested run' }));
+
+    await waitFor(() => expect(settled).toEqual(['approve']));
+    expect(transitions).toEqual([]);
+  });
+
+  it('leads with the suggested run on a card that would otherwise look idle', async () => {
+    const { settled, transitions } = stubBoardEndpoints({ withLiveSession: true });
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    const release = await within(card).findByRole('button', { name: 'Start suggested run: Plan' });
+    expect(within(card).queryByText(/^Suggested:/)).toBeNull();
+    expect(release).toHaveAttribute('data-variant', 'primary');
+    expect(within(card).getByText('Session')).toBeInTheDocument();
+
+    await user.click(release);
+
+    await waitFor(() => expect(settled).toEqual(['approve']));
+    expect(transitions).toEqual([]);
+  });
+
+  it('marks a card whose session runs beside a suggested run as waiting on you, and holds the run back', async () => {
+    stubBoardEndpoints({ withLiveSession: true });
+    server.use(
+      http.get('*/api/agent-controller/:controllerId/active-runs', () =>
+        HttpResponse.json({ runs: [{ runId: 'run-1', resourceId: SESSION_ID, threadId: 'thread-1' }] }),
+      ),
+    );
+    const { client } = renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await waitFor(() => expect(card.querySelector('[data-live-session-indicator="ready"]')).not.toBeNull());
+    await waitForMutationsIdle(client);
+    expect(card.querySelector('[data-live-session-indicator="working"]')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Start suggested run: Plan' })).toBeDisabled();
+  });
+
+  it('holds the suggested run back until the board knows whether a session holds the card', async () => {
+    stubBoardEndpoints({ withLiveSession: true });
+    server.use(
+      http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/session-activity`, async () => {
+        await delay('infinite');
+        return HttpResponse.json({});
+      }),
+    );
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    expect(await within(card).findByRole('button', { name: 'Start suggested run: Plan' })).toBeDisabled();
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    expect(await screen.findByRole('menuitem', { name: 'Start suggested run' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+  });
+
+  it('asks for the maintainer decision on a held card, not the run parked on it', async () => {
+    const { settled, transitions } = stubBoardEndpoints({ held: true });
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    expect(await within(card).findByText('Held for your go-ahead')).toBeVisible();
+    expect(within(card).queryByText('Suggested: Investigate')).not.toBeInTheDocument();
+    const accept = within(card).getByRole('button', { name: 'Accept and plan' });
+    expect(accept).toHaveAttribute('data-variant', 'primary');
+
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    await screen.findByRole('menuitem', { name: 'Accept and plan' });
+    expect(screen.queryByRole('menuitem', { name: 'Start suggested run' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Plan' })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Dismiss suggested run' })).toBeVisible();
+    await user.keyboard('{Escape}');
+
+    await user.click(accept);
+
+    await waitFor(() => expect(transitions).toEqual([expect.objectContaining({ stage: 'planning' })]));
+    expect(settled).toEqual([]);
+  });
+
+  it('stops asking about a run parked on a pull request that already closed', async () => {
+    const { settled } = stubBoardEndpoints({ closedPullRequest: true });
+    const user = userEvent.setup();
+    renderBoard('review');
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    expect(within(card).queryByText(/^Suggested:/)).toBeNull();
+
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    expect(screen.queryByRole('menuitem', { name: 'Dismiss suggested run' })).not.toBeInTheDocument();
+    expect(settled).toEqual([]);
+  });
+
+  it('still offers the Building run when the plan already filled the work session slot', async () => {
+    const { transitions } = stubBoardEndpoints({ building: true });
+    const user = userEvent.setup();
+    renderWorkBoard();
+
+    const card = await screen.findByRole('article', { name: 'Fix login bug' });
+    await user.click(within(card).getByRole('button', { name: 'Actions for Fix login bug' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Build' }));
+
+    await waitFor(() =>
+      expect(transitions).toEqual([expect.objectContaining({ stage: 'execute', cause: 'card_action', reenter: true })]),
+    );
+  });
+});

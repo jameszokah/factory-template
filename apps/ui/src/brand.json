@@ -1,0 +1,9 @@
+{
+  "name": "Factory",
+  "shortName": "Factory",
+  "description": "Turn issues into plans, implementations and reviewed pull requests with coding agents.",
+  "logo": "/brand/logo.svg",
+  "favicon": "/brand/logo.svg",
+  "themeColor": "#0f0f0f",
+  "backgroundColor": "#0f0f0f"
+}

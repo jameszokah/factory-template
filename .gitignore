@@ -1,0 +1,9 @@
+node_modules
+dist
+.mastra
+.env
+.env.local
+*.db
+*.db-*
+test-results
+apps/server/src/mastra/public/

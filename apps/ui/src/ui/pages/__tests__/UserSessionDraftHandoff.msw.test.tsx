@@ -1,0 +1,510 @@
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { createMemoryRouter, RouterProvider } from 'react-router';
+import { describe, expect, it } from 'vitest';
+
+import { server } from '../../../../e2e/ui/msw-server';
+import { renderWithProviders, TEST_API, TEST_BASE_URL, waitForMutationsIdle } from '../../../../e2e/ui/render';
+import { INITIAL_THREAD_MESSAGE_LIMIT, queryKeys } from '../../../api/keys';
+import { createQueryClient } from '../../../query-client';
+import { createAppRouter, createAppRoutes } from '../../router';
+import { DRAFT_SESSION_ID, FACTORY_ID, OTHER_DRAFT_SESSION_ID, stubDraftRoute } from './fixtures/draftRoute';
+
+if (typeof globalThis.Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
+describe('a user session draft on the real thread route', () => {
+  it('given a new draft, when the first prompt is sent, then the session starts without a mode picker or mode switch', async () => {
+    const route = stubDraftRoute({ defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    expect(screen.queryByLabelText('Session mode')).not.toBeInTheDocument();
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(route.createBodies).toEqual([
+        { sessionId: DRAFT_SESSION_ID, title: 'fix the login bug', visibility: 'private' },
+      ]),
+    );
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`),
+    );
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+    expect(route.bindingsBeforePrompt).toEqual([]);
+    const thread = within(screen.getByRole('main'));
+    // The title lands in the header breadcrumb as well; the transcript renders the message as a paragraph.
+    await waitFor(() => expect(thread.getByText('fix the login bug', { selector: 'p' })).toBeInTheDocument());
+    expect(thread.queryByText(/Failed to load messages/)).not.toBeInTheDocument();
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+    expect(route.posted).toEqual(['fix the login bug']);
+  });
+
+  // The route loader starts the read before the page mounts, so the page may join that read in flight.
+  it.each([
+    ['without route loaders', false],
+    ['with route loaders', true],
+  ])(
+    'reads a session reopened before its thread exists as empty, then loads it once the session boots (%s)',
+    async (_, withLoaders) => {
+      const route = stubDraftRoute({
+        persistedMessages: [
+          {
+            id: 'persisted-prompt',
+            role: 'user',
+            createdAt: '2026-08-07T09:00:01.000Z',
+            content: { format: 2, parts: [{ type: 'text', text: 'resume after reload' }] },
+          },
+        ],
+      });
+      // The history read answers after the session's, so the page joins a read the loader already started.
+      let historyReads = 0;
+      let answerFirstHistoryRead = () => {};
+      const firstHistoryRead = new Promise<void>(resolve => {
+        answerFirstHistoryRead = resolve;
+      });
+      server.use(
+        http.get(
+          `${TEST_BASE_URL}/api/agent-controller/code/sessions/:resourceId/threads/:threadId/messages`,
+          async () => {
+            if (historyReads++ === 0) await firstHistoryRead;
+            // Falls through to the fixture's answer: a 404 until the session boots.
+          },
+        ),
+      );
+      // A reload lands straight on the thread route, with none of the draft handoff's client state.
+      const loaderClient = withLoaders ? createQueryClient() : undefined;
+      const router = createMemoryRouter(createAppRoutes(loaderClient && { queryClient: loaderClient, api: TEST_API }), {
+        initialEntries: [`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`],
+      });
+      const { client } = renderWithProviders(<RouterProvider router={router} />, loaderClient);
+
+      await screen.findByRole('textbox', { name: 'Message' });
+      await waitFor(() => expect(client.getQueryData(queryKeys.userSession(DRAFT_SESSION_ID))).toBeDefined());
+      answerFirstHistoryRead();
+      await waitFor(() =>
+        expect(
+          client.getQueryData(
+            queryKeys.agentControllerThreadMessages(
+              'code',
+              DRAFT_SESSION_ID,
+              DRAFT_SESSION_ID,
+              INITIAL_THREAD_MESSAGE_LIMIT,
+            ),
+          ),
+        ).toEqual([]),
+      );
+      expect(screen.queryByText(/Failed to load messages/)).not.toBeInTheDocument();
+
+      route.finishWorkspace();
+      expect(await screen.findByText('resume after reload', undefined, { timeout: 5000 })).toBeInTheDocument();
+      expect(screen.queryByText(/Failed to load messages/)).not.toBeInTheDocument();
+    },
+  );
+
+  it('hands a thinking level picked in the draft to the new session with its model', async () => {
+    const route = stubDraftRoute({ defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    const modelPicker = await screen.findByLabelText('Session model');
+    await waitFor(() => expect(modelPicker).toBeEnabled());
+    await user.click(modelPicker);
+    await screen.findByRole('group', { name: 'Thinking: Medium (Built-in default)' });
+    const ramp = screen.getByRole('slider', { name: 'Thinking' });
+    fireEvent.change(ramp, { target: { value: '3' } });
+    fireEvent.keyUp(ramp);
+    await user.type(message, 'think harder');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(route.posted).toEqual(['think harder']));
+    expect(route.bindingsBeforePrompt).toEqual(['model:openai/gpt-4o-mini thinking:high']);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('starts the session on the defaults when the draft level is reset before the first message', async () => {
+    const route = stubDraftRoute({ defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    const modelPicker = await screen.findByLabelText('Session model');
+    await waitFor(() => expect(modelPicker).toBeEnabled());
+    await user.click(modelPicker);
+    await screen.findByRole('group', { name: 'Thinking: Medium (Built-in default)' });
+    const ramp = screen.getByRole('slider', { name: 'Thinking' });
+    fireEvent.change(ramp, { target: { value: '3' } });
+    fireEvent.keyUp(ramp);
+    await user.click(await screen.findByRole('button', { name: 'Use default' }));
+    expect(await screen.findByRole('group', { name: 'Thinking: Medium (Built-in default)' })).toBeInTheDocument();
+    await user.type(message, 'use the default');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(route.posted).toEqual(['use the default']));
+    expect(route.bindingsBeforePrompt).toEqual([]);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('sends a prompt submitted while the draft model resolves once the model is ready', async () => {
+    let releaseModelDefaults = () => {};
+    const modelDefaultsGate = new Promise<void>(resolve => {
+      releaseModelDefaults = resolve;
+    });
+    const route = stubDraftRoute({ modelDefaultsGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    expect(await screen.findByLabelText('Loading model')).toBeInTheDocument();
+    expect(message).toBeEnabled();
+
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByRole('button', { name: 'Send message' })).toHaveAttribute('title', 'Starting session…');
+    expect(message).toBeDisabled();
+    expect(route.createBodies).toEqual([]);
+
+    releaseModelDefaults();
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`),
+    );
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+    expect(route.createBodies).toHaveLength(1);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('opens the thread with the prompt on screen while the session is still being created', async () => {
+    let finishCreate = () => {};
+    const createGate = new Promise<void>(resolve => {
+      finishCreate = resolve;
+    });
+    const route = stubDraftRoute({ createGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const client = createQueryClient();
+    const router = createAppRouter({ queryClient: client, api: TEST_API }, routes =>
+      createMemoryRouter(routes, { initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`] }),
+    );
+    renderWithProviders(<RouterProvider router={router} />, client);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(route.createBodies).toHaveLength(1));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`),
+    );
+    expect(await screen.findByText('fix the login bug', { selector: 'main p' }, { timeout: 5000 })).toBeInTheDocument();
+    const thread = within(screen.getByRole('main'));
+    expect(screen.queryByLabelText('Loading session')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abort' })).not.toBeInTheDocument();
+    expect(route.posted).toEqual([]);
+
+    finishCreate();
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+    expect(thread.getAllByText('fix the login bug', { selector: 'p' })).toHaveLength(1);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('gives the prompt back when the thread is left before its session exists', async () => {
+    let finishCreate = () => {};
+    const createGate = new Promise<void>(resolve => {
+      finishCreate = resolve;
+    });
+    const route = stubDraftRoute({ createGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('fix the login bug', { selector: 'main p' }, { timeout: 5000 })).toBeInTheDocument();
+
+    await router.navigate(`/factories/${FACTORY_ID}/user/new/${OTHER_DRAFT_SESSION_ID}`);
+    await waitFor(() =>
+      expect(screen.queryByText('fix the login bug', { selector: 'main p' })).not.toBeInTheDocument(),
+    );
+    finishCreate();
+    await router.navigate(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`);
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('fix the login bug'));
+    expect(screen.getByText(/The previous message may not have been sent/)).toBeInTheDocument();
+    expect(route.posted).toEqual([]);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('keeps what was typed while reopening the thread alongside the prompt it gives back', async () => {
+    let finishCreate = () => {};
+    const createGate = new Promise<void>(resolve => {
+      finishCreate = resolve;
+    });
+    const route = stubDraftRoute({ createGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('fix the login bug', { selector: 'main p' }, { timeout: 5000 })).toBeInTheDocument();
+
+    await router.navigate(`/factories/${FACTORY_ID}/user/new/${OTHER_DRAFT_SESSION_ID}`);
+    await waitFor(() =>
+      expect(screen.queryByText('fix the login bug', { selector: 'main p' })).not.toBeInTheDocument(),
+    );
+    await router.navigate(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`);
+    const composer = await screen.findByRole('region', { name: 'Thread composer' });
+    await user.type(within(composer).getByRole('textbox', { name: 'Message' }), 'and the logout one');
+    finishCreate();
+
+    await waitFor(() =>
+      expect(within(composer).getByRole('textbox', { name: 'Message' })).toHaveValue(
+        'fix the login bug\n\nand the logout one',
+      ),
+    );
+    expect(screen.getByText(/The previous message may not have been sent/)).toBeInTheDocument();
+    expect(route.posted).toEqual([]);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('sends the first prompt only once when history returns to its thread after it was sent by hand', async () => {
+    let finishCreate = () => {};
+    const createGate = new Promise<void>(resolve => {
+      finishCreate = resolve;
+    });
+    const route = stubDraftRoute({ createGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('fix the login bug', { selector: 'main p' }, { timeout: 5000 })).toBeInTheDocument();
+
+    await router.navigate(`/factories/${FACTORY_ID}/user/new/${OTHER_DRAFT_SESSION_ID}`);
+    await waitFor(() =>
+      expect(screen.queryByText('fix the login bug', { selector: 'main p' })).not.toBeInTheDocument(),
+    );
+    finishCreate();
+    await router.navigate(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`);
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('fix the login bug'));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled());
+    await user.click(screen.getByRole('textbox', { name: 'Message' }));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+
+    await router.navigate(-1);
+    await router.navigate(-1);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`),
+    );
+    await waitFor(() => expect(router.state.location.state).toBeNull());
+    expect(route.posted).toEqual(['fix the login bug']);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('drops a held send when its draft is left, keeping the person on the draft they moved to', async () => {
+    let releaseModelDefaults = () => {};
+    const modelDefaultsGate = new Promise<void>(resolve => {
+      releaseModelDefaults = resolve;
+    });
+    const route = stubDraftRoute({ modelDefaultsGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    expect(await screen.findByLabelText('Loading model')).toBeInTheDocument();
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('button', { name: 'Send message' })).toHaveAttribute('title', 'Starting session…');
+
+    const otherDraftPath = `/factories/${FACTORY_ID}/user/new/${OTHER_DRAFT_SESSION_ID}`;
+    await router.navigate(otherDraftPath);
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled());
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'a second idea');
+
+    releaseModelDefaults();
+
+    await waitFor(() => expect(screen.queryByLabelText('Loading model')).not.toBeInTheDocument());
+    await waitForMutationsIdle(client);
+    expect(router.state.location.pathname).toBe(otherDraftPath);
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('a second idea');
+    expect(route.createBodies).toEqual([]);
+  });
+
+  it('starts no session from a held send when the model it waited on has no key', async () => {
+    let releaseModelDefaults = () => {};
+    const modelDefaultsGate = new Promise<void>(resolve => {
+      releaseModelDefaults = resolve;
+    });
+    const route = stubDraftRoute({ modelDefaultsGate, defaultModelId: 'openai/gpt-4o-mini' });
+    server.use(
+      http.get(`${TEST_BASE_URL}/web/config/providers`, () =>
+        HttpResponse.json({ providers: [{ provider: 'openai', source: 'none' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    expect(await screen.findByLabelText('Loading model')).toBeInTheDocument();
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('button', { name: 'Send message' })).toHaveAttribute('title', 'Starting session…');
+
+    releaseModelDefaults();
+
+    expect(await screen.findByRole('region', { name: 'Provider credential required' })).toBeInTheDocument();
+    await waitForMutationsIdle(client);
+    expect(route.createBodies).toEqual([]);
+    expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`);
+  });
+
+  it('retries a failed start on the model and thinking level picked in the draft', async () => {
+    const route = stubDraftRoute({ failedCreates: 1, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    const modelPicker = await screen.findByLabelText('Session model');
+    await waitFor(() => expect(modelPicker).toHaveAttribute('title', expect.stringContaining('gpt-4o-mini')));
+    await user.click(modelPicker);
+    await user.click(await screen.findByRole('option', { name: /GPT-5\.4 Mini/ }));
+    await waitFor(() => expect(modelPicker).toBeEnabled());
+    if (modelPicker.getAttribute('aria-expanded') !== 'true') await user.click(modelPicker);
+    await screen.findByRole('group', { name: /^Thinking: Medium/ });
+    const ramp = screen.getByRole('slider', { name: 'Thinking' });
+    fireEvent.change(ramp, { target: { value: '3' } });
+    fireEvent.keyUp(ramp);
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByText(/Could not create the session/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe(`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`);
+    const restored = screen.getByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(restored).toBeEnabled());
+    restored.focus();
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+    expect(route.createBodies).toHaveLength(2);
+    expect(route.bindingsBeforePrompt).toEqual(['model:openai/gpt-5.4-mini thinking:high']);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+
+  it('gives the prompt back on the model and thinking level picked in the draft once they apply, when the thread is left early', async () => {
+    let finishCreate = () => {};
+    const createGate = new Promise<void>(resolve => {
+      finishCreate = resolve;
+    });
+    let finishModelSwitch = () => {};
+    const modelSwitchGate = new Promise<void>(resolve => {
+      finishModelSwitch = resolve;
+    });
+    const route = stubDraftRoute({ createGate, modelSwitchGate, defaultModelId: 'openai/gpt-4o-mini' });
+    const user = userEvent.setup();
+    const router = createMemoryRouter(createAppRoutes(), {
+      initialEntries: [`/factories/${FACTORY_ID}/user/new/${DRAFT_SESSION_ID}`],
+    });
+    const { client } = renderWithProviders(<RouterProvider router={router} />);
+
+    const message = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(message).toBeEnabled());
+    const modelPicker = await screen.findByLabelText('Session model');
+    await waitFor(() => expect(modelPicker).toHaveAttribute('title', expect.stringContaining('gpt-4o-mini')));
+    await user.click(modelPicker);
+    await user.click(await screen.findByRole('option', { name: /GPT-5\.4 Mini/ }));
+    await waitFor(() => expect(modelPicker).toBeEnabled());
+    if (modelPicker.getAttribute('aria-expanded') !== 'true') await user.click(modelPicker);
+    await screen.findByRole('group', { name: /^Thinking: Medium/ });
+    const ramp = screen.getByRole('slider', { name: 'Thinking' });
+    fireEvent.change(ramp, { target: { value: '3' } });
+    fireEvent.keyUp(ramp);
+    await user.type(message, 'fix the login bug');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('fix the login bug', { selector: 'main p' }, { timeout: 5000 })).toBeInTheDocument();
+
+    await router.navigate(`/factories/${FACTORY_ID}/user/new/${OTHER_DRAFT_SESSION_ID}`);
+    await waitFor(() =>
+      expect(screen.queryByText('fix the login bug', { selector: 'main p' })).not.toBeInTheDocument(),
+    );
+    finishCreate();
+    await router.navigate(`/factories/${FACTORY_ID}/user/threads/${DRAFT_SESSION_ID}`);
+    await waitFor(() => expect(route.modelSwitchRequests).toBe(1));
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+
+    finishModelSwitch();
+
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('fix the login bug'));
+    await user.click(screen.getByRole('textbox', { name: 'Message' }));
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(route.posted).toEqual(['fix the login bug']));
+    expect(route.bindingsBeforePrompt).toEqual(['model:openai/gpt-5.4-mini thinking:high']);
+
+    route.finishWorkspace();
+    await waitForMutationsIdle(client);
+  });
+});

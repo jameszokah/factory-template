@@ -1,0 +1,105 @@
+import { Metadata } from '@mastra/playground-ui/components/Metadata';
+import { Button } from '@mastra/playground-ui/components/Button';
+import { Link, useParams } from 'react-router';
+
+import { useApiConfig } from '../../../../api/config';
+import { useChannelAccountsQuery } from '../../../../hooks/useChannelAccounts';
+import { connectSlackUrl } from '../services/channelAccounts';
+import { SettingsContainer, SettingsSkeleton } from '@mastra/playground-ui/new/settings';
+import { ConnectionManagementButton } from './common/ConnectionManagementButton';
+import { IntegrationItem } from './IntegrationItem';
+import { RetryRow } from './common/ConnectionStateRows';
+import { IconChainLink3 } from '@mastra/playground-ui/icons/central/IconChainLink3';
+import { IconSquareArrowTopRight } from '@mastra/playground-ui/icons/central/IconSquareArrowTopRight';
+
+const slack = { provider: 'slack', name: 'Slack' } as const;
+const SLACK_SETUP_DOCS_URL = 'https://factory.mastra.ai/configure/slack#create-your-own-slack-app';
+
+// Env vars alone do not prove the deployment registers SlackIntegration.
+export function SlackNotConfigured() {
+  return (
+    <SettingsContainer>
+      <SlackUnavailableRow />
+    </SettingsContainer>
+  );
+}
+
+// Each factory uses its own Slack app, so point to the guide for creating one.
+function SlackUnavailableRow() {
+  return (
+    <IntegrationItem {...slack} description="Slack is not set up for this factory.">
+      <Button
+        size="sm"
+        render={<a href={SLACK_SETUP_DOCS_URL} target="_blank" rel="noopener noreferrer" />}
+        iconEnd={<IconSquareArrowTopRight aria-hidden />}
+      >
+        Set up Slack
+      </Button>
+    </IntegrationItem>
+  );
+}
+
+export function ConnectedAccountsSection() {
+  const { factoryId } = useParams<{ factoryId: string }>();
+  const { baseUrl } = useApiConfig();
+  const accountsQuery = useChannelAccountsQuery();
+  const slackAccounts = accountsQuery.data?.accounts.filter(account => account.platform === 'slack') ?? [];
+  const canConnect = accountsQuery.data?.canConnect ?? false;
+
+  const connectSlack = () => {
+    window.location.assign(connectSlackUrl(baseUrl, factoryId));
+  };
+
+  if (accountsQuery.isPending) {
+    return <SettingsSkeleton variant="item" label="Loading connected accounts" rows={1} />;
+  }
+
+  if (accountsQuery.error) {
+    return (
+      <RetryRow
+        label={slack.name}
+        provider={slack.provider}
+        errorMsg={
+          accountsQuery.error instanceof Error ? accountsQuery.error.message : 'Failed to load connected accounts'
+        }
+        onRetry={() => void accountsQuery.refetch()}
+      />
+    );
+  }
+
+  if (accountsQuery.data?.reason === 'not_registered' || accountsQuery.data?.unavailable) {
+    return <SlackUnavailableRow />;
+  }
+
+  if (slackAccounts.length === 0) {
+    return (
+      <IntegrationItem
+        {...slack}
+        description={canConnect ? undefined : 'Slack sign-in is not configured on this server.'}
+      >
+        <Button size="sm" icon={<IconChainLink3 />} disabled={!canConnect} onClick={connectSlack}>
+          Connect Slack
+        </Button>
+      </IntegrationItem>
+    );
+  }
+
+  return slackAccounts.map((account, index) => (
+    <IntegrationItem
+      key={`${account.externalTeamId}:${account.externalUserId}`}
+      {...slack}
+      description={
+        <Metadata>
+          <Metadata.Item>{account.externalUserName || account.externalUserId}</Metadata.Item>
+          <Metadata.Item>{account.externalTeamName || account.externalTeamId}</Metadata.Item>
+        </Metadata>
+      }
+    >
+      {index === 0 && factoryId && (
+        <ConnectionManagementButton render={<Link to={`/factories/${factoryId}/settings/connections/slack`} />}>
+          Configure Slack
+        </ConnectionManagementButton>
+      )}
+    </IntegrationItem>
+  ));
+}

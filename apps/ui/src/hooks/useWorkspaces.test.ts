@@ -1,0 +1,200 @@
+import { describe, expect, it } from 'vitest';
+
+import { queryKeys } from '../api/keys';
+import type { SessionRowsResponse, SessionRowWire } from '../api/types';
+import { createQueryClient } from '../query-client';
+import type { FactoryUserSession } from '../ui/domains/workspaces/services/user-sessions';
+import { addCachedSession, updateCachedSessionTitle } from './useWorkspaces';
+import type { WorkspacesData } from './useWorkspaces';
+
+function session(overrides: Partial<FactoryUserSession>): FactoryUserSession {
+  return {
+    id: 'row-1',
+    sessionId: 'sess-1',
+    projectRepositoryId: 'ghp-1',
+    orgId: 'org-1',
+    userId: 'user-1',
+    visibility: 'org',
+    title: 'Session',
+    branch: 'factory/issue-1',
+    baseBranch: 'main',
+    sandboxId: null,
+    sandboxWorkdir: null,
+    materializedAt: '2026-07-20T00:00:00.000Z',
+    createdAt: '2026-07-20T00:00:00.000Z',
+    updatedAt: '2026-07-20T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function data(overrides: Partial<WorkspacesData>): WorkspacesData {
+  return { workspaces: [], userSessions: [], ...overrides };
+}
+
+describe('addCachedSession', () => {
+  it('classifies Slack threads as user sessions rather than board workspaces', () => {
+    const client = createQueryClient();
+    const key = queryKeys.sessions('factory-1');
+    client.setQueryData(key, data({}));
+    const slack = session({ sessionId: 'slack-1', branch: 'slack/123.456' });
+
+    addCachedSession(client, 'factory-1', slack);
+
+    expect(client.getQueryData<WorkspacesData>(key)).toEqual(data({ userSessions: [slack] }));
+  });
+});
+
+describe('updateCachedSessionTitle', () => {
+  it('updates the matching workspace without replacing unrelated rows', async () => {
+    const client = createQueryClient();
+    const workspace = session({ title: undefined });
+    const unrelated = session({ id: 'row-2', sessionId: 'sess-2', title: 'Keep me' });
+    const current = data({ workspaces: [workspace, unrelated] });
+    const queryKey = queryKeys.sessions(workspace.projectRepositoryId);
+    client.setQueryData(queryKey, current);
+
+    await updateCachedSessionTitle(
+      client,
+      workspace.projectRepositoryId,
+      workspace.sessionId,
+      'Generated workspace title',
+    );
+
+    const updated = client.getQueryData<WorkspacesData>(queryKey);
+    expect(updated).toEqual(
+      data({
+        workspaces: [{ ...workspace, title: 'Generated workspace title' }, unrelated],
+      }),
+    );
+    expect(updated?.workspaces[1]).toBe(unrelated);
+  });
+
+  it('updates the matching user session', async () => {
+    const client = createQueryClient();
+    const userSession = session({ sessionId: 'user-1', title: undefined, branch: 'user/session-user-1' });
+    const queryKey = queryKeys.sessions(userSession.projectRepositoryId);
+    client.setQueryData(queryKey, data({ userSessions: [userSession] }));
+
+    await updateCachedSessionTitle(
+      client,
+      userSession.projectRepositoryId,
+      userSession.sessionId,
+      'Generated user title',
+    );
+
+    expect(client.getQueryData<WorkspacesData>(queryKey)?.userSessions).toEqual([
+      { ...userSession, title: 'Generated user title' },
+    ]);
+  });
+
+  it('keeps the title when a canceled sessions fetch resolves with stale data', async () => {
+    const client = createQueryClient();
+    const workspace = session({ title: undefined });
+    const current = data({ workspaces: [workspace] });
+    const queryKey = queryKeys.sessions(workspace.projectRepositoryId);
+    client.setQueryData(queryKey, current);
+
+    let resolveFetch!: (value: WorkspacesData) => void;
+    const fetch = client.query({
+      queryKey,
+      queryFn: () =>
+        new Promise<WorkspacesData>(resolve => {
+          resolveFetch = resolve;
+        }),
+      staleTime: 0,
+    });
+    const fetchResult = fetch.catch(() => undefined);
+    await Promise.resolve();
+    expect(client.getQueryState(queryKey)?.fetchStatus).toBe('fetching');
+
+    await updateCachedSessionTitle(
+      client,
+      workspace.projectRepositoryId,
+      workspace.sessionId,
+      'Generated workspace title',
+    );
+    resolveFetch(current);
+    await fetchResult;
+
+    expect(client.getQueryData<WorkspacesData>(queryKey)?.workspaces).toEqual([
+      { ...workspace, title: 'Generated workspace title' },
+    ]);
+  });
+
+  it('preserves the cached data when the session is absent or the title is unchanged', async () => {
+    const client = createQueryClient();
+    const workspace = session({ title: 'Generated workspace title' });
+    const current = data({ workspaces: [workspace] });
+    const queryKey = queryKeys.sessions(workspace.projectRepositoryId);
+    client.setQueryData(queryKey, current);
+
+    await updateCachedSessionTitle(client, workspace.projectRepositoryId, 'missing-session', 'Other title');
+    expect(client.getQueryData(queryKey)).toBe(current);
+
+    await updateCachedSessionTitle(
+      client,
+      workspace.projectRepositoryId,
+      workspace.sessionId,
+      'Generated workspace title',
+    );
+    expect(client.getQueryData(queryKey)).toBe(current);
+  });
+
+  it('names the session in the sidebar’s rows, nested ones included, and on its own page', async () => {
+    const client = createQueryClient();
+    const wireSession = (sessionId: string): SessionRowWire['session'] => ({
+      id: `row-${sessionId}`,
+      sessionId,
+      projectRepositoryId: 'ghp-1',
+      userId: 'user-1',
+      branch: `factory/${sessionId}`,
+      title: null,
+      visibility: 'org',
+      createdAt: '2026-07-20T00:00:00.000Z',
+    });
+    const rowFields: Pick<SessionRowWire, 'origin' | 'status' | 'pinned' | 'updatedAt'> = {
+      origin: 'factory',
+      status: 'idle',
+      pinned: false,
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    };
+    const rowsKey = queryKeys.sessionRows('factory-1', {
+      sort: 'activity',
+      groupBy: 'none',
+      owner: 'all',
+      children: true,
+      pin: [],
+      windows: {},
+    });
+    const rows: SessionRowsResponse = {
+      total: 2,
+      matching: 2,
+      groups: [
+        {
+          key: 'all',
+          total: 2,
+          rows: [
+            { ...rowFields, session: wireSession('sess-1') },
+            {
+              ...rowFields,
+              session: wireSession('sess-2'),
+              childRows: [{ ...rowFields, session: wireSession('sess-1') }],
+            },
+          ],
+        },
+      ],
+      boards: [],
+      owners: [],
+    };
+    client.setQueryData(rowsKey, rows);
+    client.setQueryData(queryKeys.userSession('sess-1'), session({ title: undefined }));
+
+    await updateCachedSessionTitle(client, 'factory-1', 'sess-1', 'Generated title');
+
+    const [first, second] = client.getQueryData<SessionRowsResponse>(rowsKey)?.groups[0]?.rows ?? [];
+    expect(first?.session.title).toBe('Generated title');
+    expect(second?.session.title).toBeNull();
+    expect(second?.childRows?.[0]?.session.title).toBe('Generated title');
+    expect(client.getQueryData<FactoryUserSession>(queryKeys.userSession('sess-1'))?.title).toBe('Generated title');
+  });
+});

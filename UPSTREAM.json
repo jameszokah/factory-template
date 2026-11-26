@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/mastra-ai/mastra",
+  "path": "mastracode/factory-ui",
+  "commit": "05cad114ab838c3248e21dd8673203c636611cb1",
+  "release": "@mastra/factory@0.31.0"
+}
