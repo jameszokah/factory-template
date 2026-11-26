@@ -9,7 +9,7 @@ Nothing runs on the Mastra Platform. Sign-in, storage, sandboxes and integration
 
 ## Use this template
 
-Click **Use this template** on GitHub (or `gh repo create my-factory --template <owner>/factory-template`), then:
+Click **Use this template** on GitHub (or `gh repo create my-factory --template jameszokah/factory-template --clone`), then:
 
 ```bash
 bun install
